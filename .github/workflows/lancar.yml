@@ -1,16 +1,20 @@
 # Monta o instalador do Zeno a partir do código privado (adrianoraki/Zeno) e publica aqui.
 # Roda neste repositório público porque aqui o GitHub Actions é gratuito.
 # Precisa do segredo ZENO_TOKEN: token do GitHub com leitura (Contents: Read) do repositório privado Zeno.
-# Disparo: aba Actions > "Lançar versão" > Run workflow, informando a tag (ex.: v3.3).
+# Disparo: aba Actions > "Lançar versão" > Run workflow (marque "publicar" para lançar; sem marcar, só testa).
+# A versão vem do $TurboVersion do Zeno.ps1 e as novidades da seção "## X.Y" do NOVIDADES.md.
 name: Lançar versão
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag do Zeno a lançar (ex.: v3.3). Vazio = só testar o "main", sem publicar.'
-        required: false
-        default: ''
+      publicar:
+        description: 'Publicar a versão (sem marcar = só testar)'
+        type: boolean
+        default: false
+      ref:
+        description: 'Ramo ou commit do Zeno'
+        default: 'main'
 
 permissions:
   contents: write
@@ -23,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: adrianoraki/Zeno
-          ref: ${{ inputs.tag || 'main' }}
+          ref: ${{ inputs.ref }}
           token: ${{ secrets.ZENO_TOKEN }}
           path: zeno
           fetch-depth: 0
@@ -31,12 +35,16 @@ jobs:
       - name: Conferir versão
         id: ver
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $m = Select-String -Path zeno/Zeno.ps1 -Pattern "^\`$TurboVersion = '([\d.]+)'" | Select-Object -First 1
           if (-not $m) { throw 'Não achei $TurboVersion no Zeno.ps1' }
           $v = $m.Matches[0].Groups[1].Value
-          $tag = '${{ inputs.tag }}'
-          if ($tag -and $tag -ne "v$v") { throw "A tag $tag não bate com a versão do Zeno.ps1 ($v)" }
+          if ('${{ inputs.publicar }}' -eq 'true') {
+            $ok = $true; try { gh release view "v$v" --repo ${{ github.repository }} *> $null; if ($LASTEXITCODE -eq 0) { $ok = $false } } catch {}
+            if (-not $ok) { throw "A versão v$v já foi publicada. Aumente o \$TurboVersion no Zeno.ps1." }
+          }
           "versao=$v" >> $env:GITHUB_OUTPUT
 
       - name: Conferir sintaxe do zeno/Zeno.ps1
@@ -69,10 +77,17 @@ jobs:
       - name: Notas da versão
         shell: pwsh
         run: |
-          $n = ''
-          if ('${{ inputs.tag }}') { $n = (git -C zeno tag -l --format='%(contents)' '${{ inputs.tag }}' | Out-String).Trim() }
-          if (-not $n) { $n = 'Melhorias e correções.' }
-          Set-Content -Path zeno\dist\notas.md -Value $n -Encoding utf8
+          $v = '${{ steps.ver.outputs.versao }}'
+          $n = @(); $in = $false
+          if (Test-Path zeno/NOVIDADES.md) {
+            foreach ($l in Get-Content zeno/NOVIDADES.md -Encoding utf8) {
+              if ($l -match '^##\s+(.+)$') { $in = ($Matches[1].Trim() -eq $v); continue }
+              if ($in -and $l.Trim()) { $n += $l.Trim() }
+            }
+          }
+          if ($n.Count -eq 0) { $n = @('- Melhorias e correções.') }
+          Set-Content -Path zeno\dist\notas.md -Value ($n -join "`n") -Encoding utf8
+          $n
 
       - uses: actions/upload-artifact@v4
         with:
@@ -80,7 +95,7 @@ jobs:
           path: zeno/dist/Zeno-Setup.exe*
 
       - name: Publicar a versão
-        if: inputs.tag != ''
+        if: inputs.publicar
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
