@@ -42,10 +42,11 @@ jobs:
           if (-not $m) { throw 'Não achei $TurboVersion no Zeno.ps1' }
           $v = $m.Matches[0].Groups[1].Value
           if ('${{ inputs.publicar }}' -eq 'true') {
-            $ok = $true; try { gh release view "v$v" --repo ${{ github.repository }} *> $null; if ($LASTEXITCODE -eq 0) { $ok = $false } } catch {}
-            if (-not $ok) { throw "A versão v$v já foi publicada. Aumente o \$TurboVersion no Zeno.ps1." }
+            $tags = @(gh release list --repo ${{ github.repository }} --limit 200 --json tagName --jq '.[].tagName')
+            if ($tags -contains "v$v") { throw "A versão v$v já foi publicada. Aumente o \$TurboVersion no Zeno.ps1." }
           }
           "versao=$v" >> $env:GITHUB_OUTPUT
+          exit 0
 
       - name: Conferir sintaxe do zeno/Zeno.ps1
         shell: powershell
