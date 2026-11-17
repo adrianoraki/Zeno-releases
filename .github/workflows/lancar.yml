@@ -1,0 +1,89 @@
+# Monta o instalador do Zeno a partir do código privado (adrianoraki/Zeno) e publica aqui.
+# Roda neste repositório público porque aqui o GitHub Actions é gratuito.
+# Precisa do segredo ZENO_TOKEN: token do GitHub com leitura (Contents: Read) do repositório privado Zeno.
+# Disparo: aba Actions > "Lançar versão" > Run workflow, informando a tag (ex.: v3.3).
+name: Lançar versão
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag do Zeno a lançar (ex.: v3.3). Vazio = só testar o "main", sem publicar.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  instalador:
+    runs-on: windows-2022
+    steps:
+      - name: Baixar o código do Zeno (privado)
+        uses: actions/checkout@v4
+        with:
+          repository: adrianoraki/Zeno
+          ref: ${{ inputs.tag || 'main' }}
+          token: ${{ secrets.ZENO_TOKEN }}
+          path: zeno
+          fetch-depth: 0
+
+      - name: Conferir versão
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path zeno/Zeno.ps1 -Pattern "^\`$TurboVersion = '([\d.]+)'" | Select-Object -First 1
+          if (-not $m) { throw 'Não achei $TurboVersion no Zeno.ps1' }
+          $v = $m.Matches[0].Groups[1].Value
+          $tag = '${{ inputs.tag }}'
+          if ($tag -and $tag -ne "v$v") { throw "A tag $tag não bate com a versão do Zeno.ps1 ($v)" }
+          "versao=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Conferir sintaxe do zeno/Zeno.ps1
+        shell: powershell
+        run: |
+          $err = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path zeno/Zeno.ps1), [ref]$null, [ref]$err)
+          if ($err) { $err | ForEach-Object { "Linha $($_.Extent.StartLineNumber): $($_.Message)" }; throw 'zeno/Zeno.ps1 tem erro de sintaxe' }
+          'Sintaxe OK'
+
+      - name: Compilar Zeno.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force zeno\dist | Out-Null
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /target:winexe /optimize+ /codepage:65001 /win32icon:zeno\Zeno.ico /r:System.Windows.Forms.dll /out:zeno\dist\Zeno.exe zeno\launcher\ZenoLauncher.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Falha ao compilar o Zeno.exe' }
+
+      - name: Gerar instalador
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc /Q "/DMyAppVersion=${{ steps.ver.outputs.versao }}" zeno\installer\Zeno.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Falha ao gerar o instalador' }
+          $h = (Get-FileHash zeno\dist\Zeno-Setup.exe -Algorithm SHA256).Hash
+          Set-Content -Path zeno\dist\Zeno-Setup.exe.sha256 -Value "$h  Zeno-Setup.exe" -Encoding ascii -NoNewline
+          "SHA256: $h"
+
+      - name: Notas da versão
+        shell: pwsh
+        run: |
+          $n = ''
+          if ('${{ inputs.tag }}') { $n = (git -C zeno tag -l --format='%(contents)' '${{ inputs.tag }}' | Out-String).Trim() }
+          if (-not $n) { $n = 'Melhorias e correções.' }
+          Set-Content -Path zeno\dist\notas.md -Value $n -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zeno-Setup-${{ steps.ver.outputs.versao }}
+          path: zeno/dist/Zeno-Setup.exe*
+
+      - name: Publicar a versão
+        if: inputs.tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.ver.outputs.versao }}'
+          gh release create "v$v" zeno\dist\Zeno-Setup.exe zeno\dist\Zeno-Setup.exe.sha256 --repo ${{ github.repository }} --title "Zeno $v" --notes-file zeno\dist\notas.md
