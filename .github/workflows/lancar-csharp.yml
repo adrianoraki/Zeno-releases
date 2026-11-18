@@ -1,0 +1,322 @@
+# Para o repositório PÚBLICO adrianoraki/Zeno-releases (lá o Actions é gratuito).
+# Copiar para: Zeno-releases/.github/workflows/lancar-csharp.yml  (o lancar.yml de hoje continua lá, para o PowerShell).
+# Precisa do segredo ZENO_TOKEN (o mesmo do lancar.yml).
+#
+# Monta o Zeno em C# e só publica depois do teste de migração passar, no mesmo Windows do GitHub:
+#   1. PowerShell → C#: instala a última versão PowerShell publicada, grava config.json, backup.json, licença e nome
+#      conhecidos, roda o instalador novo como o atualizador do PowerShell roda (/zenofica=1 + Zeno.ps1 -Reiniciar)
+#      e confere que o Zeno.exe novo abriu e que nada daquilo mudou.
+#   2. C# → C#: um segundo instalador com número maior, rodado do jeito do Zeno em C# (sem /zenofica=1, Zeno fecha):
+#      confere que o Zeno.exe trocou e reabriu.
+#   3. Volta: o instalador PowerShell por cima do C# abre de novo o Zeno.ps1 completo.
+# Disparo: Actions › "Lançar versão (C#)" › Run workflow. Sem marcar "publicar" = só monta e testa.
+# A versão vem do <Version> do src/Directory.Build.props e as novidades da seção "## X.Y" do NOVIDADES.md.
+name: Lançar versão (C#)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publicar:
+        description: 'Publicar a versão (sem marcar = só testar)'
+        type: boolean
+        default: false
+      ref:
+        description: 'Ramo ou commit do Zeno'
+        default: 'reescrita-csharp'
+
+permissions:
+  contents: write
+
+jobs:
+  montar:
+    runs-on: windows-2022
+    outputs:
+      versao: ${{ steps.ver.outputs.versao }}
+    steps:
+      - name: Baixar o código do Zeno (privado)
+        uses: actions/checkout@v4
+        with:
+          repository: adrianoraki/Zeno
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.ZENO_TOKEN }}
+          path: zeno
+
+      - name: Conferir versão
+        id: ver
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [xml]$p = Get-Content zeno/src/Directory.Build.props
+          $v = [version](@($p.Project.PropertyGroup | ForEach-Object { $_.Version } | Where-Object { $_ })[0])
+          $txt = if ($v.Build -gt 0) { "$($v.Major).$($v.Minor).$($v.Build)" } else { "$($v.Major).$($v.Minor)" }
+          # tem que ser maior que todas as publicadas (senão quem está no PowerShell não atualiza)
+          $tags = @(gh release list --repo ${{ github.repository }} --limit 200 --json tagName --jq '.[].tagName')
+          foreach ($t in $tags) {
+            $tv = $null
+            if ([version]::TryParse(($t -replace '^v', ''), [ref]$tv) -and $tv -ge [version]$txt) { throw "A versão $txt não é maior que a $t já publicada. Aumente o <Version> no src/Directory.Build.props." }
+          }
+          "versao=$txt" >> $env:GITHUB_OUTPUT
+          "Versão: $txt"
+
+      - name: Compilar e testar
+        shell: pwsh
+        run: |
+          dotnet build zeno/src/Zeno.sln -c Release -nologo
+          if ($LASTEXITCODE) { throw 'Falha ao compilar' }
+          dotnet test zeno/src/Zeno.Testes/Zeno.Testes.csproj -c Release --no-build -nologo
+          if ($LASTEXITCODE) { throw 'Os testes falharam' }
+          # os mesmos testes num processo de 32 bits (como no Windows 32)
+          dotnet test zeno/src/Zeno.Testes/Zeno.Testes.csproj -c Release --no-build -nologo -- RunConfiguration.TargetPlatform=x86
+          if ($LASTEXITCODE) { throw 'Os testes em 32 bits falharam' }
+
+      - name: Testar a voz (baixa o Piper e as vozes e gera áudio de verdade)
+        shell: pwsh
+        env:
+          ZENO_TESTE_VOZ: '1'
+        run: |
+          dotnet test zeno/src/Zeno.Testes/Zeno.Testes.csproj -c Release --no-build -nologo --filter "FullyQualifiedName~VozTestes"
+          if ($LASTEXITCODE) { throw 'Teste da voz falhou' }
+
+      - name: Guardar amostras das vozes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amostras-voz
+          path: amostras-voz/*.wav
+          if-no-files-found: ignore
+
+      - name: Montar os dois instaladores (a versão e um teste com número maior)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          function Montar([string]$v, [string]$saida) {
+            Remove-Item -Recurse -Force zeno\dist\csharp -ErrorAction SilentlyContinue
+            dotnet build zeno/src/Zeno/Zeno.csproj -c Release -nologo "-p:Version=$v" -o zeno\dist\csharp
+            if ($LASTEXITCODE) { throw "Falha ao compilar a $v" }
+            $exe = 'zeno\dist\csharp\Zeno.exe'
+            # AnyCPU sem "Prefer 32-bit": um Zeno.exe só para Windows 32 e 64 bits
+            $n = [Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $exe))
+            if ($n.ProcessorArchitecture -ne 'MSIL') { throw "Zeno.exe não é AnyCPU ($($n.ProcessorArchitecture))" }
+            $pek = [Reflection.PortableExecutableKinds]::NotAPortableExecutableImage; $maq = [Reflection.ImageFileMachine]::I386
+            [Reflection.Assembly]::LoadFile((Resolve-Path $exe).Path).ManifestModule.GetPEKind([ref]$pek, [ref]$maq)
+            if ("$pek" -match '32Bit') { throw "Zeno.exe pede 32 bits ($pek)" }
+            "Zeno.exe: $($n.ProcessorArchitecture), $pek (roda em 32 e 64 bits)"
+            # o Zeno.ps1 pequeno, com a versão no $TurboVersion
+            $ps1 = (Get-Content zeno\src\instalador\Zeno.ps1 -Raw -Encoding UTF8) -replace "\`$TurboVersion = '[\d.]+'", "`$TurboVersion = '$v'"
+            [IO.File]::WriteAllText((Join-Path (Resolve-Path zeno\dist\csharp) 'Zeno.ps1'), $ps1, (New-Object Text.UTF8Encoding $true))
+            & $iscc /Q "/DMyAppVersion=$v" zeno\installer\ZenoNet.iss
+            if ($LASTEXITCODE) { throw 'Falha ao gerar o instalador' }
+            New-Item -ItemType Directory -Force $saida | Out-Null
+            Move-Item zeno\dist\Zeno-Setup.exe (Join-Path $saida 'Zeno-Setup.exe') -Force
+          }
+          $v = '${{ steps.ver.outputs.versao }}'
+          Montar '99.0' saida\teste-maior
+          Montar $v saida\versao
+          $h = (Get-FileHash saida\versao\Zeno-Setup.exe -Algorithm SHA256).Hash
+          Set-Content -Path saida\versao\Zeno-Setup.exe.sha256 -Value "$h  Zeno-Setup.exe" -Encoding ascii -NoNewline
+          "SHA256: $h"
+
+      - name: Notas da versão
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.versao }}'
+          $n = @(); $in = $false
+          foreach ($l in Get-Content zeno/NOVIDADES.md -Encoding utf8) {
+            if ($l -match '^##\s+(.+)$') { $in = ($Matches[1].Trim() -eq $v); continue }
+            if ($in -and $l.Trim()) { $n += $l.Trim() }
+          }
+          if ($n.Count -eq 0) { $n = @('- Melhorias e correções.') }
+          Set-Content -Path saida\versao\notas.md -Value ($n -join "`n") -Encoding utf8
+          $n
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instaladores
+          path: saida/
+
+  migracao:
+    needs: montar
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: instaladores
+          path: saida
+
+      - name: Baixar a última versão PowerShell publicada
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = gh release view --repo ${{ github.repository }} --json tagName --jq .tagName
+          if ([version]($tag -replace '^v', '') -ge [version]'4.0') { throw "A última publicada ($tag) já é em C#: o teste PowerShell → C# precisa de uma em PowerShell" }
+          gh release download $tag --repo ${{ github.repository }} --pattern 'Zeno-Setup.exe' --dir saida\powershell
+          "Versão PowerShell: $tag"
+
+      - name: Preparar um PC "de quem já usa"
+        shell: powershell
+        run: |
+          $dados = Join-Path $env:APPDATA 'Zeno'
+          New-Item -ItemType Directory -Force $dados | Out-Null
+          # o nome (o instalador silencioso mantém o que já está salvo)
+          New-Item -Path 'HKCU:\Software\Zeno' -Force | Out-Null
+          Set-ItemProperty -Path 'HKCU:\Software\Zeno' -Name Nome -Value 'Teste CI'
+          # uma chave já ativada (como o Zeno PowerShell deixa depois de ativar): Visto = SHA256(chave|pcid)
+          $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid
+          $sha = [Security.Cryptography.SHA256]::Create()
+          $pcid = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("ZENO|$guid"))[0..3]
+          $chave = 'TESTECIABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+          $visto = (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($chave + '|' + [BitConverter]::ToString([byte[]]$pcid))) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 24)
+          New-Item -Path 'HKCU:\Software\ZenoLic' -Force | Out-Null
+          Set-ItemProperty -Path 'HKCU:\Software\ZenoLic' -Name Chave -Value $chave
+          Set-ItemProperty -Path 'HKCU:\Software\ZenoLic' -Name Visto -Value $visto
+          Set-ItemProperty -Path 'HKCU:\Software\ZenoLic' -Name Validade -Value 'sem prazo'
+          # config com uma chave que o Zeno não conhece (tem que sobreviver) e sem limpeza automática
+          $cfg = '{"Tema":"claro","Escala":0.9,"Mascote":true,"LimpezaAuto":false,"AtualizarSozinho":true,"ChaveDoTesteCI":"fica","Kivo":{"Compartilhar":true,"AceitarPedidos":true}}'
+          [IO.File]::WriteAllText((Join-Path $dados 'config.json'), $cfg, (New-Object Text.UTF8Encoding $true))
+          $bk = '{"testeci":{"Path":"HKCU:\\Software\\ZenoTesteCI","Name":"Valor","Type":"DWord","Existia":false,"Valor":null}}'
+          [IO.File]::WriteAllText((Join-Path $dados 'backup.json'), $bk, (New-Object Text.UTF8Encoding $true))
+
+      - name: Instalar a versão PowerShell e abrir
+        shell: powershell
+        run: |
+          $p = Start-Process saida\powershell\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Instalador PowerShell: código $($p.ExitCode)" }
+          # o [Run] do instalador abre o Zeno; espera a janela (o mutex) aparecer
+          $ok = $false
+          for ($i = 0; $i -lt 90 -and -not $ok; $i++) {
+            Start-Sleep 1
+            try { $m = [Threading.Mutex]::OpenExisting('Local\Zeno_Tela'); $m.Dispose(); $ok = $true } catch {}
+          }
+          if (-not $ok) { Get-Content "$env:APPDATA\Zeno\log.txt" -Tail 40 -ErrorAction SilentlyContinue; throw 'O Zeno PowerShell não abriu' }
+          Start-Sleep 20
+          Get-Content "$env:APPDATA\Zeno\log.txt" -Tail 15
+
+      - name: "PowerShell → C#: atualizar como o Zeno PowerShell atualiza"
+        shell: powershell
+        run: |
+          $dados = Join-Path $env:APPDATA 'Zeno'; $app = Join-Path $env:USERPROFILE 'Zeno'
+          function Foto {
+            $c = Get-Content (Join-Path $dados 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $l = Get-ItemProperty 'HKCU:\Software\ZenoLic'
+            [pscustomobject]@{
+              Config = $c; Backup = (Get-Content (Join-Path $dados 'backup.json') -Raw -Encoding UTF8 | ConvertFrom-Json | ConvertTo-Json -Depth 10 -Compress)
+              Lic = "$($l.Chave)|$($l.Visto)|$($l.Validade)|$($l.Inicio)"; Nome = (Get-ItemProperty 'HKCU:\Software\Zeno').Nome
+            }
+          }
+          $antes = Foto
+          $antes | Format-List | Out-String | Write-Host
+          $velho = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'Zeno\.ps1' })
+          if ($velho.Count -eq 0) { throw 'Não achei o Zeno PowerShell aberto' }
+          # o mesmo que o Start-UpdateInstall: instalador com o Zeno aberto
+          $p = Start-Process saida\versao\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /zenofica=1' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Instalador C#: código $($p.ExitCode)" }
+          # pendente.json e Restart-Turbo, do jeito do Zeno.ps1 3.x
+          New-Item -ItemType Directory -Force (Join-Path $dados 'atualizacao') | Out-Null
+          @{ de = '3.x'; para = '${{ needs.montar.outputs.versao }}'; em = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dados 'atualizacao\pendente.json') -Encoding UTF8
+          Start-Process (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe') "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$app\Zeno.ps1`" -Reiniciar"
+          Start-Sleep -Milliseconds 1200
+          # a janela PowerShell fecha (ReallyClose): aqui, fechando o processo
+          $velho | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $z = $null
+          for ($i = 0; $i -lt 60 -and -not $z; $i++) { Start-Sleep 1; $z = Get-Process Zeno -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$app\Zeno.exe" -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
+          Get-Content (Join-Path $dados 'log.txt') -Tail 25
+          if (-not $z) { throw 'O Zeno.exe novo não abriu' }
+          $fv = (Get-Item "$app\Zeno.exe").VersionInfo.FileVersion
+          "Zeno.exe aberto: $fv (pid $($z.Id))"
+          if (-not $fv.StartsWith('${{ needs.montar.outputs.versao }}')) { throw "Zeno.exe com a versão errada: $fv" }
+          Start-Sleep 15
+          if ($z.HasExited) { throw 'O Zeno.exe fechou sozinho' }
+          if (-not (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualização confirmada' -Quiet)) { throw 'O Zeno não confirmou a atualização (pendente.json)' }
+          if (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'chave salva recusada' -Quiet) { throw 'A licença ativada foi recusada' }
+          $depois = Foto
+          foreach ($k in $antes.Config.PSObject.Properties.Name) {
+            if ($k -eq 'VersaoVista') { continue }   # muda de propósito: o Zeno mostrou as novidades
+            $a = $antes.Config.$k | ConvertTo-Json -Depth 10 -Compress; $d = $depois.Config.$k | ConvertTo-Json -Depth 10 -Compress
+            if ($a -ne $d) { throw "config.json: $k mudou ($a -> $d)" }
+          }
+          if ($antes.Backup -ne $depois.Backup) { throw "backup.json mudou:`n$($antes.Backup)`n$($depois.Backup)" }
+          if ($antes.Lic -ne $depois.Lic) { throw "Licença mudou: $($antes.Lic) -> $($depois.Lic)" }
+          if ($antes.Nome -ne $depois.Nome) { throw "Nome mudou: $($antes.Nome) -> $($depois.Nome)" }
+          'PowerShell → C#: ok'
+
+      - name: "Kivo: Zeno.ps1 -Status pelo Zeno.ps1 pequeno"
+        shell: powershell
+        run: |
+          $st = Join-Path $env:APPDATA 'Zeno\status.json'
+          Remove-Item $st -ErrorAction SilentlyContinue
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Zeno\Zeno.ps1" -Status
+          if ($LASTEXITCODE -ne 0) { throw "-Status saiu com $LASTEXITCODE" }
+          if (-not (Test-Path $st)) { throw '-Status não gravou o status.json' }
+          $o = Get-Content $st -Raw -Encoding UTF8 | ConvertFrom-Json
+          # (o Zeno aberto também grava o status.json a cada ~4 s; aqui só confere que é um status do Zeno de agora)
+          if ($o.app -ne 'Zeno' -or ((Get-Date) - [datetime]$o.atualizado_em).TotalSeconds -gt 60) { throw 'status.json diferente do esperado' }
+          'Zeno.ps1 -Status: ok'
+
+      - name: "C# → C#: atualizar como o Zeno em C# atualiza"
+        shell: powershell
+        run: |
+          $dados = Join-Path $env:APPDATA 'Zeno'; $app = Join-Path $env:USERPROFILE 'Zeno'
+          $z = Get-Process Zeno | Where-Object { $_.Path -eq "$app\Zeno.exe" } | Select-Object -First 1
+          if (-not $z) { throw 'O Zeno em C# não está aberto' }
+          # o mesmo código do Zeno (Zeno.Core): pendente.json e o instalador sem /zenofica=1; depois o Zeno fecha
+          # (uma cópia da DLL: a da pasta do Zeno não pode ficar presa, o instalador vai trocá-la)
+          $dll = Join-Path $env:TEMP 'Zeno.Core.teste.dll'; Copy-Item "$app\Zeno.Core.dll" $dll -Force
+          Add-Type -Path $dll
+          [Zeno.Core.Atualizacao.Atualizador]::GravarPendente('99.0')
+          [void][Zeno.Core.Atualizacao.Atualizador]::Instalar((Resolve-Path saida\teste-maior\Zeno-Setup.exe).Path, $false)
+          Start-Sleep 2
+          Stop-Process -Id $z.Id -Force
+          $novo = $null
+          for ($i = 0; $i -lt 90 -and -not $novo; $i++) {
+            Start-Sleep 1
+            $novo = Get-Process Zeno -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $z.Id -and $_.Path -eq "$app\Zeno.exe" -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+          }
+          Get-Content (Join-Path $dados 'log.txt') -Tail 20
+          if (-not $novo) { throw 'O Zeno não reabriu depois da atualização' }
+          $fv = (Get-Item "$app\Zeno.exe").VersionInfo.FileVersion
+          if (-not $fv.StartsWith('99.0')) { throw "O Zeno.exe não foi trocado: $fv" }
+          Start-Sleep 10
+          if (-not (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualização confirmada: [\d.]+ -> 99\.0' -Quiet)) { throw 'O Zeno 99.0 não confirmou a atualização' }
+          "C# → C#: ok (Zeno.exe $fv, pid $($novo.Id))"
+
+      - name: "Volta: instalador PowerShell por cima do C#"
+        shell: powershell
+        run: |
+          $app = Join-Path $env:USERPROFILE 'Zeno'
+          $z = Get-Process Zeno | Where-Object { $_.Path -eq "$app\Zeno.exe" } | Select-Object -First 1
+          # como o Zeno em C# roda o instalador: sem /zenofica=1, e fecha
+          $p = Start-Process saida\powershell\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -PassThru
+          Start-Sleep 2
+          if ($z) { Stop-Process -Id $z.Id -Force }
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) { throw "Instalador PowerShell: código $($p.ExitCode)" }
+          if (-not (Select-String -Path "$app\Zeno.ps1" -Pattern "^\`$TurboVersion = '3\." -Quiet)) { throw 'O Zeno.ps1 completo não voltou' }
+          $ok = $false
+          for ($i = 0; $i -lt 60 -and -not $ok; $i++) { Start-Sleep 1; $ok = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'Zeno\.ps1' }).Count -gt 0 }
+          if (-not $ok) { throw 'O Zeno PowerShell não abriu depois da volta' }
+          'Volta para o PowerShell: ok'
+
+      - name: Registro do Zeno
+        if: always()
+        shell: powershell
+        run: Get-Content "$env:APPDATA\Zeno\log.txt" -Tail 80 -ErrorAction SilentlyContinue
+
+  publicar:
+    needs: [montar, migracao]
+    if: inputs.publicar
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: instaladores
+          path: saida
+      - name: Publicar a versão
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ needs.montar.outputs.versao }}'
+          gh release create "v$v" saida\versao\Zeno-Setup.exe saida\versao\Zeno-Setup.exe.sha256 --repo ${{ github.repository }} --title "Zeno $v" --notes-file saida\versao\notas.md
