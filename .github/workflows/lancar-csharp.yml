@@ -97,12 +97,11 @@ jobs:
             if ($LASTEXITCODE) { throw "Falha ao compilar a $v" }
             $exe = 'zeno\dist\csharp\Zeno.exe'
             # AnyCPU sem "Prefer 32-bit": um Zeno.exe só para Windows 32 e 64 bits
-            $n = [Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $exe))
-            if ($n.ProcessorArchitecture -ne 'MSIL') { throw "Zeno.exe não é AnyCPU ($($n.ProcessorArchitecture))" }
-            $pek = [Reflection.PortableExecutableKinds]::NotAPortableExecutableImage; $maq = [Reflection.ImageFileMachine]::I386
-            [Reflection.Assembly]::LoadFile((Resolve-Path $exe).Path).ManifestModule.GetPEKind([ref]$pek, [ref]$maq)
-            if ("$pek" -match '32Bit') { throw "Zeno.exe pede 32 bits ($pek)" }
-            "Zeno.exe: $($n.ProcessorArchitecture), $pek (roda em 32 e 64 bits)"
+            # (o GetAssemblyName do PowerShell 7 sempre diz 'None'; por isso lê o cabeçalho do .exe direto)
+            $fs = [IO.File]::OpenRead((Resolve-Path $exe).Path)
+            try { $pe = New-Object System.Reflection.PortableExecutable.PEReader($fs); $cf = "$($pe.PEHeaders.CorHeader.Flags)"; $maq = "$($pe.PEHeaders.CoffHeader.Machine)" } finally { $fs.Close() }
+            if ($maq -ne 'I386' -or $cf -notmatch 'ILOnly' -or $cf -match 'Requires32Bit|Prefers32Bit') { throw "Zeno.exe não é AnyCPU (máquina $maq, $cf)" }
+            "Zeno.exe: AnyCPU ($cf), roda em 32 e 64 bits"
             # o Zeno.ps1 pequeno, com a versão no $TurboVersion
             $ps1 = (Get-Content zeno\src\instalador\Zeno.ps1 -Raw -Encoding UTF8) -replace "\`$TurboVersion = '[\d.]+'", "`$TurboVersion = '$v'"
             [IO.File]::WriteAllText((Join-Path (Resolve-Path zeno\dist\csharp) 'Zeno.ps1'), $ps1, (New-Object Text.UTF8Encoding $true))
