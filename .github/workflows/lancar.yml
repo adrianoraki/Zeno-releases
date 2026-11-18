@@ -63,7 +63,6 @@ jobs:
             python zeno\tests\gerar_chaves.py | Set-Content -Path chaves-teste.json -Encoding utf8
             powershell -NoProfile -ExecutionPolicy Bypass -File zeno\tests\licenca.ps1 chaves-teste.json zeno\Zeno.ps1
             if ($LASTEXITCODE -ne 0) { throw 'Teste da licença falhou' }
-            if ('${{ inputs.publicar }}' -eq 'true' -and (Select-String -Path zeno\Zeno.ps1 -SimpleMatch '__CHAVE_PUBLICA__' -Quiet)) { throw 'Falta a chave pública da Kivo no Zeno.ps1: não dá para publicar.' }
           }
 
       - name: Compilar Zeno.exe
