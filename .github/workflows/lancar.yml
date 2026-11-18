@@ -65,6 +65,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Teste da licença falhou' }
           }
 
+      - name: Testar a voz (Thalita e Antonio)
+        shell: powershell
+        run: |
+          if (Test-Path zeno\tests\voz.ps1) {
+            powershell -NoProfile -ExecutionPolicy Bypass -File zeno\tests\voz.ps1 zeno\Zeno.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'Teste da voz falhou' }
+          }
+
       - name: Compilar Zeno.exe
         shell: pwsh
         run: |
