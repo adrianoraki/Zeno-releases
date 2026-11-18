@@ -56,6 +56,16 @@ jobs:
           if ($err) { $err | ForEach-Object { "Linha $($_.Extent.StartLineNumber): $($_.Message)" }; throw 'zeno/Zeno.ps1 tem erro de sintaxe' }
           'Sintaxe OK'
 
+      - name: Testar a licença (chave assinada como a Kivo faz)
+        shell: powershell
+        run: |
+          if (Test-Path zeno\tests\licenca.ps1) {
+            python zeno\tests\gerar_chaves.py | Set-Content -Path chaves-teste.json -Encoding utf8
+            powershell -NoProfile -ExecutionPolicy Bypass -File zeno\tests\licenca.ps1 chaves-teste.json zeno\Zeno.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'Teste da licença falhou' }
+            if ('${{ inputs.publicar }}' -eq 'true' -and (Select-String -Path zeno\Zeno.ps1 -SimpleMatch '__CHAVE_PUBLICA__' -Quiet)) { throw 'Falta a chave pública da Kivo no Zeno.ps1: não dá para publicar.' }
+          }
+
       - name: Compilar Zeno.exe
         shell: pwsh
         run: |
