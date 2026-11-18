@@ -73,6 +73,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Teste da voz falhou' }
           }
 
+      - name: Guardar amostras das vozes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amostras-voz
+          path: amostras-voz/*.wav
+          if-no-files-found: ignore
+
       - name: Compilar Zeno.exe
         shell: pwsh
         run: |
