@@ -245,7 +245,11 @@ jobs:
             if ($a -ne $d) { throw "config.json: $k mudou ($a -> $d)" }
           }
           if ($antes.Backup -ne $depois.Backup) { throw "backup.json mudou:`n$($antes.Backup)`n$($depois.Backup)" }
-          if ($antes.Lic -ne $depois.Lic) { throw "Licença mudou: $($antes.Lic) -> $($depois.Lic)" }
+          # Chave, Visto e Validade não podem mudar. O Inicio (começo do teste de 30 dias) pode ser criado se não existia:
+          # a chave do teste não é assinada, então o C# começa o teste grátis, sem apagar a chave
+          $la = $antes.Lic.Split('|'); $ld = $depois.Lic.Split('|')
+          if (($la[0..2] -join '|') -ne ($ld[0..2] -join '|')) { throw "Licenca mudou: $($antes.Lic) -> $($depois.Lic)" }
+          if ($la[3] -and $la[3] -ne $ld[3]) { throw "Inicio do teste mudou: $($la[3]) -> $($ld[3])" }
           if ($antes.Nome -ne $depois.Nome) { throw "Nome mudou: $($antes.Nome) -> $($depois.Nome)" }
           'PowerShell -> C#: ok'
 
