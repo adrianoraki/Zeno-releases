@@ -2,6 +2,7 @@
 # Roda neste repositório público porque aqui o GitHub Actions é gratuito.
 # Precisa do segredo ZENO_TOKEN: token do GitHub com leitura (Contents: Read) do repositório privado Zeno.
 # Disparo: aba Actions > "Lançar versão" > Run workflow (marque "publicar" para lançar; sem marcar, só testa).
+# "teste": publica como pré-lançamento vX.Y.0.N (N = número da execução); a família não recebe, só quem liga o canal de teste.
 # A versão vem do $TurboVersion do Zeno.ps1 e as novidades da seção "## X.Y" do NOVIDADES.md.
 name: Lançar versão
 
@@ -15,6 +16,10 @@ on:
       ref:
         description: 'Ramo ou commit do Zeno'
         default: 'main'
+      teste:
+        description: 'Publicar como versão de TESTE (pré-lançamento: só chega em quem liga "Receber versões de teste")'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -41,7 +46,19 @@ jobs:
           $m = Select-String -Path zeno/Zeno.ps1 -Pattern "^\`$TurboVersion = '([\d.]+)'" | Select-Object -First 1
           if (-not $m) { throw 'Não achei $TurboVersion no Zeno.ps1' }
           $v = $m.Matches[0].Groups[1].Value
-          if ('${{ inputs.publicar }}' -eq 'true') {
+          "base=$v" >> $env:GITHUB_OUTPUT
+          if ('${{ inputs.teste }}' -eq 'true') {
+            $v = "$v.0.${{ github.run_number }}"
+            $p = (Resolve-Path zeno/Zeno.ps1).Path
+            $t = [IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)
+            $pat = '(?m)^\$TurboVersion = ''[\d.]+'''
+            $rx = New-Object System.Text.RegularExpressions.Regex($pat)
+            $t = $rx.Replace($t, ('$$TurboVersion = ''' + $v + ''''), 1)
+            if ($t -notmatch [regex]::Escape("`$TurboVersion = '$v'")) { throw 'Não consegui trocar a versão no Zeno.ps1' }
+            [IO.File]::WriteAllText($p, $t, (New-Object Text.UTF8Encoding $true))
+            "Versão de teste: $v"
+          }
+          if ('${{ inputs.publicar }}' -eq 'true' -or '${{ inputs.teste }}' -eq 'true') {
             $tags = @(gh release list --repo ${{ github.repository }} --limit 200 --json tagName --jq '.[].tagName')
             if ($tags -contains "v$v") { throw "A versão v$v já foi publicada. Aumente o \$TurboVersion no Zeno.ps1." }
           }
@@ -103,7 +120,7 @@ jobs:
       - name: Notas da versão
         shell: pwsh
         run: |
-          $v = '${{ steps.ver.outputs.versao }}'
+          $v = '${{ steps.ver.outputs.base }}'
           $n = @(); $in = $false
           if (Test-Path zeno/NOVIDADES.md) {
             foreach ($l in Get-Content zeno/NOVIDADES.md -Encoding utf8) {
@@ -119,6 +136,15 @@ jobs:
         with:
           name: Zeno-Setup-${{ steps.ver.outputs.versao }}
           path: zeno/dist/Zeno-Setup.exe*
+
+      - name: Publicar versão de teste (pré-lançamento)
+        if: inputs.teste && !inputs.publicar
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.ver.outputs.versao }}'
+          gh release create "v$v" zeno\dist\Zeno-Setup.exe zeno\dist\Zeno-Setup.exe.sha256 --repo ${{ github.repository }} --prerelease --title "Zeno ${{ steps.ver.outputs.base }} (teste ${{ github.run_number }})" --notes-file zeno\dist\notas.md
 
       - name: Publicar a versão
         if: inputs.publicar
