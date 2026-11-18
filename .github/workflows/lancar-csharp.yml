@@ -138,6 +138,7 @@ jobs:
   migracao:
     needs: montar
     runs-on: windows-2022
+    timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -181,7 +182,9 @@ jobs:
       - name: Instalar a versão PowerShell e abrir
         shell: powershell
         run: |
-          $p = Start-Process saida\powershell\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait -PassThru
+          $p = Start-Process saida\powershell\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -PassThru
+          # -Wait esperaria também o Zeno que o instalador abre (que nunca fecha); espera só o instalador
+          if (-not $p.WaitForExit(300000)) { throw 'O instalador não terminou em 5 minutos' }
           if ($p.ExitCode -ne 0) { throw "Instalador PowerShell: código $($p.ExitCode)" }
           # o [Run] do instalador abre o Zeno; espera a janela (o mutex) aparecer
           $ok = $false
@@ -210,7 +213,9 @@ jobs:
           $velho = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'Zeno\.ps1' })
           if ($velho.Count -eq 0) { throw 'Não achei o Zeno PowerShell aberto' }
           # o mesmo que o Start-UpdateInstall: instalador com o Zeno aberto
-          $p = Start-Process saida\versao\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /zenofica=1' -Wait -PassThru
+          $p = Start-Process saida\versao\Zeno-Setup.exe '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /zenofica=1' -PassThru
+          # -Wait esperaria também o Zeno que o instalador abre (que nunca fecha); espera só o instalador
+          if (-not $p.WaitForExit(300000)) { throw 'O instalador não terminou em 5 minutos' }
           if ($p.ExitCode -ne 0) { throw "Instalador C#: código $($p.ExitCode)" }
           # pendente.json e Restart-Turbo, do jeito do Zeno.ps1 3.x
           New-Item -ItemType Directory -Force (Join-Path $dados 'atualizacao') | Out-Null
