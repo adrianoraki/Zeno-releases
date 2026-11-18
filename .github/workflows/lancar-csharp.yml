@@ -233,8 +233,11 @@ jobs:
           if (-not $fv.StartsWith('${{ needs.montar.outputs.versao }}')) { throw "Zeno.exe com a versão errada: $fv" }
           Start-Sleep 15
           if ($z.HasExited) { throw 'O Zeno.exe fechou sozinho' }
-          if (-not (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualização confirmada' -Quiet)) { throw 'O Zeno não confirmou a atualização (pendente.json)' }
-          if (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'chave salva recusada' -Quiet) { throw 'A licença ativada foi recusada' }
+          # espera até 30 s (o Zeno confirma logo depois de abrir). Padrão só com ASCII: o Windows PowerShell lê este script como ANSI
+          $conf = $false; for ($i = 0; $i -lt 30 -and -not $conf; $i++) { $conf = [bool](Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualiza.{1,4}o confirmada' -Quiet); if (-not $conf) { Start-Sleep 1 } }
+          if (-not $conf) { throw 'O Zeno nao confirmou a atualizacao (pendente.json)' }
+          # a chave do teste não é assinada (a chave secreta da Kivo não fica no GitHub), então o C# recusar é o certo;
+          # o que importa é não apagar nem trocar a licença salva (conferido logo abaixo). As chaves de verdade estão nos testes em C#.
           $depois = Foto
           foreach ($k in $antes.Config.PSObject.Properties.Name) {
             if ($k -eq 'VersaoVista') { continue }   # muda de propósito: o Zeno mostrou as novidades
@@ -283,7 +286,7 @@ jobs:
           $fv = (Get-Item "$app\Zeno.exe").VersionInfo.FileVersion
           if (-not $fv.StartsWith('99.0')) { throw "O Zeno.exe não foi trocado: $fv" }
           Start-Sleep 10
-          if (-not (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualização confirmada: [\d.]+ -> 99\.0' -Quiet)) { throw 'O Zeno 99.0 não confirmou a atualização' }
+          if (-not (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualiza.{1,4}o confirmada: [\d.]+ -> 99\.0' -Quiet)) { throw 'O Zeno 99.0 não confirmou a atualização' }
           "C# -> C#: ok (Zeno.exe $fv, pid $($novo.Id))"
 
       - name: "Volta: instalador PowerShell por cima do C#"
