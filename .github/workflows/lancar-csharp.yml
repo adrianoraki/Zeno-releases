@@ -3,10 +3,10 @@
 # Precisa do segredo ZENO_TOKEN (o mesmo do lancar.yml).
 #
 # Monta o Zeno em C# e só publica depois do teste de migração passar, no mesmo Windows do GitHub:
-#   1. PowerShell → C#: instala a última versão PowerShell publicada, grava config.json, backup.json, licença e nome
+#   1. PowerShell -> C#: instala a última versão PowerShell publicada, grava config.json, backup.json, licença e nome
 #      conhecidos, roda o instalador novo como o atualizador do PowerShell roda (/zenofica=1 + Zeno.ps1 -Reiniciar)
 #      e confere que o Zeno.exe novo abriu e que nada daquilo mudou.
-#   2. C# → C#: um segundo instalador com número maior, rodado do jeito do Zeno em C# (sem /zenofica=1, Zeno fecha):
+#   2. C# -> C#: um segundo instalador com número maior, rodado do jeito do Zeno em C# (sem /zenofica=1, Zeno fecha):
 #      confere que o Zeno.exe trocou e reabriu.
 #   3. Volta: o instalador PowerShell por cima do C# abre de novo o Zeno.ps1 completo.
 # Disparo: Actions › "Lançar versão (C#)" › Run workflow. Sem marcar "publicar" = só monta e testa.
@@ -151,7 +151,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = gh release view --repo ${{ github.repository }} --json tagName --jq .tagName
-          if ([version]($tag -replace '^v', '') -ge [version]'4.0') { throw "A última publicada ($tag) já é em C#: o teste PowerShell → C# precisa de uma em PowerShell" }
+          if ([version]($tag -replace '^v', '') -ge [version]'4.0') { throw "A última publicada ($tag) já é em C#: o teste PowerShell -> C# precisa de uma em PowerShell" }
           gh release download $tag --repo ${{ github.repository }} --pattern 'Zeno-Setup.exe' --dir saida\powershell
           "Versão PowerShell: $tag"
 
@@ -196,7 +196,7 @@ jobs:
           Start-Sleep 20
           Get-Content "$env:APPDATA\Zeno\log.txt" -Tail 15
 
-      - name: "PowerShell → C#: atualizar como o Zeno PowerShell atualiza"
+      - name: "PowerShell -> C#: atualizar como o Zeno PowerShell atualiza"
         shell: powershell
         run: |
           $dados = Join-Path $env:APPDATA 'Zeno'; $app = Join-Path $env:USERPROFILE 'Zeno'
@@ -244,7 +244,7 @@ jobs:
           if ($antes.Backup -ne $depois.Backup) { throw "backup.json mudou:`n$($antes.Backup)`n$($depois.Backup)" }
           if ($antes.Lic -ne $depois.Lic) { throw "Licença mudou: $($antes.Lic) -> $($depois.Lic)" }
           if ($antes.Nome -ne $depois.Nome) { throw "Nome mudou: $($antes.Nome) -> $($depois.Nome)" }
-          'PowerShell → C#: ok'
+          'PowerShell -> C#: ok'
 
       - name: "Kivo: Zeno.ps1 -Status pelo Zeno.ps1 pequeno"
         shell: powershell
@@ -259,7 +259,7 @@ jobs:
           if ($o.app -ne 'Zeno' -or ((Get-Date) - [datetime]$o.atualizado_em).TotalSeconds -gt 60) { throw 'status.json diferente do esperado' }
           'Zeno.ps1 -Status: ok'
 
-      - name: "C# → C#: atualizar como o Zeno em C# atualiza"
+      - name: "C# -> C#: atualizar como o Zeno em C# atualiza"
         shell: powershell
         run: |
           $dados = Join-Path $env:APPDATA 'Zeno'; $app = Join-Path $env:USERPROFILE 'Zeno'
@@ -284,7 +284,7 @@ jobs:
           if (-not $fv.StartsWith('99.0')) { throw "O Zeno.exe não foi trocado: $fv" }
           Start-Sleep 10
           if (-not (Select-String -Path (Join-Path $dados 'log.txt') -Pattern 'Atualização confirmada: [\d.]+ -> 99\.0' -Quiet)) { throw 'O Zeno 99.0 não confirmou a atualização' }
-          "C# → C#: ok (Zeno.exe $fv, pid $($novo.Id))"
+          "C# -> C#: ok (Zeno.exe $fv, pid $($novo.Id))"
 
       - name: "Volta: instalador PowerShell por cima do C#"
         shell: powershell
